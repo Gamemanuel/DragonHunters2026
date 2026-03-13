@@ -1,31 +1,23 @@
 """
 Flywheel subsystem for the 2026 REBUILT FRC season.
 
-Uses PhotonVision (photonlibpy) to detect hub AprilTags via a USB-connected
-camera and dynamically set the flywheel velocity based on the calculated
-distance to the hub.  Both red and blue alliances are supported via FMS /
-DriverStation alliance data.
-
-PhotonVision supports any USB camera attached to a coprocessor (Raspberry Pi,
-Orange Pi, etc.) that is connected to the robot network, including cameras
-originally designed for FTC.  The coprocessor runs the PhotonVision software
-and publishes results to NetworkTables – the robot code reads from NT via the
-``photonlibpy`` client library without needing to know the camera connection
-type (USB or Ethernet).
+Uses a Limelight 3A to detect hub AprilTags and dynamically set the flywheel
+velocity based on the calculated distance to the hub.  Both red and blue
+alliances are supported via FMS / DriverStation alliance data.
 
 Motors
 ------
 - Two TalonFX motors in a differential flywheel configuration (Phoenix 6).
 - One REV SparkMax conveyor motor whose speed is controlled by the toggle.
 
-Vision integration
-------------------
-``PhotonCamera`` (photonlibpy) is queried each robot cycle.  Each
-``PhotonTrackedTarget`` exposes ``getFiducialId()`` and
-``getBestCameraToTarget()`` (a ``Transform3d``).  Horizontal distance is
-computed as ``hypot(translation.X(), translation.Y())``.  When multiple hub
-tags are visible simultaneously the target with the smallest
-``getPoseAmbiguity()`` score is used.
+Limelight integration
+---------------------
+Data is read from the Limelight NetworkTable each robot cycle.  The primary
+distance estimate comes from ``botpose_targetspace`` (6-element array: tx, ty,
+tz in meters followed by roll/pitch/yaw in degrees).  When multiple hub tags
+are simultaneously visible the Limelight solver already fuses all of them to
+produce a single best-estimate robot pose, so no additional averaging is needed
+in this code.
 
 Velocity calculation
 --------------------
@@ -39,9 +31,10 @@ import math
 from typing import List, Optional
 
 import commands2
-from photonlibpy import PhotonCamera
-from phoenix6 import CANBus, configs, controls, hardware
+import ntcore
 import rev
+import wpilib
+from phoenix6 import CANBus, configs, controls, hardware
 from wpilib import DriverStation, SmartDashboard
 
 import constants
@@ -102,14 +95,10 @@ class FlywheelSubsystem(commands2.Subsystem):
         self._target_velocity_rps: float = 0.0
 
         # ------------------------------------------------------------------
-        # Vision camera (PhotonVision – supports USB cameras on a coprocessor)
+        # Limelight NetworkTable
         # ------------------------------------------------------------------
-        self._camera = PhotonCamera(constants.PHOTON_CAMERA_NAME)
-
-        # --- Alternative: raw Limelight NetworkTables (uncomment if preferred) ---
-        # import ntcore
-        # nt = ntcore.NetworkTableInstance.getDefault()
-        # self._limelight = nt.getTable(constants.LIMELIGHT_TABLE_NAME)
+        nt = ntcore.NetworkTableInstance.getDefault()
+        self._limelight = nt.getTable(constants.LIMELIGHT_TABLE_NAME)
 
     # ----------------------------------------------------------------------
     # Subsystem periodic – called every 20 ms
@@ -183,70 +172,50 @@ class FlywheelSubsystem(commands2.Subsystem):
         return self._flywheel_two
 
     # ----------------------------------------------------------------------
-    # Vision / distance helpers
+    # Limelight / distance helpers
     # ----------------------------------------------------------------------
 
     def _get_distance_to_hub(self) -> Optional[float]:
         """
-        Query PhotonVision for the best hub AprilTag and return the horizontal
-        distance to it in **meters**.  Returns ``None`` when no hub tag for the
-        current alliance is visible.
+        Read AprilTag data from the Limelight and return the horizontal
+        distance to the hub in **meters**.  Returns ``None`` when no hub tag
+        for the current alliance is visible.
 
-        **Triangulation**: when multiple hub tags are visible at the same time,
-        the tag with the lowest pose ambiguity (most reliable pose estimate) is
-        selected.  ``getBestCameraToTarget()`` returns the best-fit
-        ``Transform3d`` for that tag.  Horizontal distance is
-        ``hypot(translation.X(), translation.Y())``.
-
-        **Coordinate system**: PhotonVision / WPIMath uses a
-        right-hand, Z-up frame.  ``X`` is forward from the camera,
-        ``Y`` is left.  ``hypot(X, Y)`` therefore gives the horizontal
-        range to the tag centre, independent of the camera tilt.
+        **Triangulation note**: ``botpose_targetspace`` is a 6-element array
+        ``[tx, ty, tz, rx, ry, rz]`` where tx/ty/tz are the robot's
+        translation relative to the *primary* tracked tag in meters.  When
+        more than one hub tag is simultaneously visible the Limelight's
+        multi-tag solver already fuses all detections into a single
+        best-estimate pose, so no additional averaging is required here.
+        In Limelight's target-space frame tx is the lateral (left/right)
+        offset, ty is vertical, and tz is the forward depth.
+        Horizontal distance = ``sqrt(tx² + tz²)`` (lateral + depth,
+        ignoring the vertical ty offset).
         """
-        result = self._camera.getLatestResult()
-        if not result.hasTargets():
+        # Is there a valid target?
+        tv = self._limelight.getEntry("tv").getDouble(0)
+        if tv < 1:
             return None
 
-        hub_ids = self._get_hub_tag_ids()
-        best_target = None
-        best_ambiguity = float("inf")
-
-        for target in result.getTargets():
-            if target.getFiducialId() in hub_ids:
-                ambiguity = target.getPoseAmbiguity()
-                # Skip targets with invalid/missing ambiguity values
-                if ambiguity is None or ambiguity < 0:
-                    continue
-                if ambiguity < best_ambiguity:
-                    best_ambiguity = ambiguity
-                    best_target = target
-
-        if best_target is None:
+        # Confirm the tracked tag is a hub tag for the active alliance
+        tag_id = int(self._limelight.getEntry("tid").getDouble(-1))
+        if tag_id not in self._get_hub_tag_ids():
             return None
 
-        translation = best_target.getBestCameraToTarget().translation()
-        horizontal_distance = math.hypot(translation.X(), translation.Y())
+        # Read robot pose relative to the target tag
+        pose = self._limelight.getEntry("botpose_targetspace").getDoubleArray(
+            [0.0] * 6
+        )
+        if len(pose) < 3:
+            return None
+
+        tx, tz = pose[0], pose[2]
+        horizontal_distance = math.hypot(tx, tz)
 
         if horizontal_distance <= 0:
             return None
 
         return horizontal_distance
-
-        # --- Alternative: raw Limelight NetworkTables distance calculation ---
-        # tv = self._limelight.getEntry("tv").getDouble(0)
-        # if tv < 1:
-        #     return None
-        # tag_id = int(self._limelight.getEntry("tid").getDouble(-1))
-        # if tag_id not in hub_ids:
-        #     return None
-        # pose = self._limelight.getEntry("botpose_targetspace").getDoubleArray([0.0] * 6)
-        # if len(pose) < 3:
-        #     return None
-        # tx, tz = pose[0], pose[2]
-        # horizontal_distance = math.hypot(tx, tz)
-        # if horizontal_distance <= 0:
-        #     return None
-        # return horizontal_distance
 
     def _get_hub_tag_ids(self) -> List[int]:
         """Return hub AprilTag IDs for the alliance reported by FMS / DS."""
@@ -315,4 +284,3 @@ class FlywheelSubsystem(commands2.Subsystem):
         """
         self._velocity_request = self._velocity_request.with_velocity(velocity_rps)
         self._flywheel_one.set_control(self._velocity_request)
-

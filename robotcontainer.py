@@ -5,6 +5,7 @@
 #
 
 import commands2
+import rev
 from commands2 import cmd, InstantCommand
 from commands2.button import CommandXboxController, Trigger
 from commands2.sysid import SysIdRoutine
@@ -20,6 +21,9 @@ from pathplannerlib.auto import AutoBuilder, NamedCommands
 from pathplannerlib.auto import PathPlannerAuto
 from phoenix6 import CANBus, controls, hardware
 
+from subsystems.flywheel import FlywheelSubsystem
+from commands.flywheel_commands import EnableFlywheelCommand, DisableFlywheelCommand
+
 class RobotContainer:
     """
     This class is where the bulk of the robot should be declared. Since Command-based is a
@@ -28,7 +32,7 @@ class RobotContainer:
     subsystems, commands, and button mappings) should be declared here.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, flywheel: FlywheelSubsystem, transfer_motor: rev.SparkMax) -> None:
         self._max_speed = (
             1.0 * TunerConstants.speed_at_12_volts
         )  # speed_at_12_volts desired top speed
@@ -55,37 +59,41 @@ class RobotContainer:
         self._joystick = CommandXboxController(0)
 
         self.drivetrain = TunerConstants.create_drivetrain()
+
+        # Named commands for PathPlanner autonomous routines
         NamedCommands.registerCommand(
             "transfer",
-            InstantCommand(lambda: self.transferMotor.set(0.5))
-        )
-        NamedCommands.registerCommand(
-            "conveyor",
-            InstantCommand(lambda: self.conveyorMotor.set(0.5))
-        )
-        NamedCommands.registerCommand(
-            "shootOne",
-           InstantCommand(lambda:self.flywheelOne.set(0.6)) #lambda:self.flywheelOne.set_control(controls.VelocityVoltage(self.targetRPS))
-        )
-        NamedCommands.registerCommand(
-            "shootTwo",
-            InstantCommand(lambda:self.flywheelTwo.set(0.6)), #lambda:self.flywheelOne.set_control(controls.VelocityVoltage(self.targetRPS))
-        )
-        NamedCommands.registerCommand(
-            "conveyorStop",
-            InstantCommand(lambda: self.conveyorMotor.set(0))
+            InstantCommand(lambda: transfer_motor.set(0.5))
         )
         NamedCommands.registerCommand(
             "transferStop",
-            InstantCommand(lambda: self.transferMotor.set(0))
+            InstantCommand(lambda: transfer_motor.set(0))
+        )
+        # Shooting named commands use the FlywheelSubsystem so that
+        # PID velocity control and Limelight distance tracking are active.
+        NamedCommands.registerCommand(
+            "shootOne",
+            EnableFlywheelCommand(flywheel)
+        )
+        NamedCommands.registerCommand(
+            "shootTwo",
+            EnableFlywheelCommand(flywheel)
+        )
+        NamedCommands.registerCommand(
+            "conveyor",
+            EnableFlywheelCommand(flywheel)
         )
         NamedCommands.registerCommand(
             "shootOneStop",
-            InstantCommand(lambda: self.flywheelOne.set(0))
+            DisableFlywheelCommand(flywheel)
         )
         NamedCommands.registerCommand(
             "shootTwoStop",
-            InstantCommand(lambda: self.flywheelTwo.set(0))
+            DisableFlywheelCommand(flywheel)
+        )
+        NamedCommands.registerCommand(
+            "conveyorStop",
+            DisableFlywheelCommand(flywheel)
         )
         self._auto_chooser = AutoBuilder.buildAutoChooser("Tests")
         SmartDashboard.putData("Auto Mode", self._auto_chooser) #was being weird earlier, might need to be changed

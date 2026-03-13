@@ -81,12 +81,22 @@ FLYWHEEL_QUAD_C: float = 18.0  # RPS offset
 CONVEYOR_SPEED: float = 0.5
 
 # ---------------------------------------------------------------------------
-# Limelight 3A – NetworkTable configuration
-#   Default table name is "limelight".  If multiple Limelights are connected,
-#   rename each one via the Limelight web interface and update this constant.
+# Vision camera name (PhotonVision)
+#   This must match the camera name set in the PhotonVision web interface.
+#   PhotonVision supports USB cameras on a coprocessor (Raspberry Pi, etc.)
+#   as well as Limelight cameras running PhotonVision firmware.
+#   Default name assigned by PhotonVision: "photonvision"
+#   Change it here if you rename the camera in the web UI.
+# ---------------------------------------------------------------------------
+PHOTON_CAMERA_NAME: str = "photonvision"
+
+# ---------------------------------------------------------------------------
+# Limelight 3A – NetworkTable configuration (alternative – see docs)
+#   Uncomment and use LIMELIGHT_TABLE_NAME in FlywheelSubsystem if you
+#   prefer raw Limelight NT entries instead of PhotonVision.
 #   Team 10380 default static IP: 10.103.80.11
 # ---------------------------------------------------------------------------
-LIMELIGHT_TABLE_NAME: str = "limelight"
+# LIMELIGHT_TABLE_NAME: str = "limelight"
 
 # ---------------------------------------------------------------------------
 # 2026 REBUILT – hub AprilTag IDs

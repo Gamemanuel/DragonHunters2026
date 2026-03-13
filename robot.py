@@ -17,12 +17,9 @@ from pathplannerlib.controller import PPHolonomicDriveController
 from pathplannerlib.config import RobotConfig, PIDConstants
 from wpilib import DriverStation
 from commands2.button import CommandXboxController, Trigger
-#import limelight
-#import limelightresults
-#import json
-#import time
 
 from phoenix6 import HootAutoReplay
+from subsystems.flywheel import FlywheelSubsystem
 
 
 class MyRobot(commands2.TimedCommandRobot):
@@ -38,24 +35,6 @@ class MyRobot(commands2.TimedCommandRobot):
         This function is run when the robot is first started up and should be used for any
         initialization code.
         """
-        
-        self.flywheelOne = hardware.TalonFX(16, CANBus("rio"))
-        self.flywheelTwo = hardware.TalonFX(17, CANBus("rio"))
-        cfg = configs.TalonFXConfiguration()
-        cfg.motor_output.inverted = configs.config_groups.InvertedValue.COUNTER_CLOCKWISE_POSITIVE
-        self.flywheelOne.configurator.apply(cfg)
-        slot0_configs = configs.Slot0Configs()
-        slot0_configs.k_s = 0.1 # Add 0.1 V output to overcome static friction
-        slot0_configs.k_v = 0.12 # A velocity target of 1 rps results in 0.12 V output
-        slot0_configs.k_p = 0.11 # An error of 1 rps results in 0.11 V output
-        slot0_configs.k_i = 0 # no output for integrated error
-        slot0_configs.k_d = 0 # no output for error derivative #TUNE PLEASE
-        self.flywheelOne.configurator.apply(slot0_configs)
-        
-        #differential strict follower code need to figure out documentation
-        self.flywheelTwo.configurator.apply(slot0_configs) #DO NOT KEEP!! FIGURE OUT FOLLOWER CODE
-        #AHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH
-
 
         self.IMU = hardware.Pigeon2(0, CANBus("rio"))
         #rev.SparkMax(deviceID: SupportsInt | SupportsIndex, type: rev._rev.SparkLowLevel.MotorType)
@@ -65,20 +44,10 @@ class MyRobot(commands2.TimedCommandRobot):
         self.intakePower = rev.SparkMax(20,BRUSHLESS)
         self.transferMotor = rev.SparkMax(21,BRUSHLESS)
         self.conveyorMotor = rev.SparkMax(22, BRUSHLESS)
-        #self.limelight = limelight.limelight("Limelight")
-        
-        # Drive Motors
-        #self.intakeArm           : REVSparkMax = self.addDriveMotor(REVSparkMax(intakeArm, BRUSHLESS))
-        #self.intakeArmFollower   : REVSparkMax = self.addDriveMotor(REVSparkMax(intakeArmFollower, BRUSHLESS))
-        #self.intakePower         : REVSparkMax = self.addDriveMotor(REVSparkMax(intakePower, BRUSHLESS))
-        #self.transferMotor       : REVSparkMax = self.addDriveMotor(REVSparkMax(transferMotor, BRUSHLESS))
-        #self.conveyorMotor       : REVSparkMax = self.addDriveMotor(REVSparkMax(conveyorMotor, BRUSHLESS))
-        
-        # Follower Motors
-        #self.addFollowerMotor(self.intakeArm, self.intakeArmFollower)
-        
-        # Reversed Motors
-        #self.addReversedMotor(self.left_motor)
+
+        # Flywheel subsystem – owns flywheelOne, flywheelTwo and coordinates
+        # the conveyor motor as part of the shooting toggle.
+        self.flywheel = FlywheelSubsystem(self.conveyorMotor)
 
         #Controller
         self.driverController: XboxController = XboxController(0)
@@ -90,11 +59,8 @@ class MyRobot(commands2.TimedCommandRobot):
         self.angle = 0
         # Instantiate our RobotContainer.  This will perform all our button bindings, and put our
         # autonomous chooser on the dashboard.
-        self.container = RobotContainer()
+        self.container = RobotContainer(self.flywheel, self.transferMotor)
         self.IMU.reset()
-        self.targetRPM = 2700
-        self.targetRPS = self.targetRPM / 60
-
 
         # log and replay timestamp and joystick data
         self._time_and_joystick_replay = (
@@ -170,16 +136,9 @@ class MyRobot(commands2.TimedCommandRobot):
         else:
             self.intakePower.set(0)
             #stops the intake 
-        #flywheel code
-        #probably some weird limelight stuff
-        if self.toolController.getRawButton(4):# x button
-            self.flywheelOne.set(.6)
-            self.flywheelTwo.set(.6)
-            #set.flywheelOne.set_control(-controls.VelocityVoltage(self.targetRPS))
-            #self.flywheelTwo.set_control(controls.VelocityVoltage(self.targetRPS))
-        else:
-            self.flywheelOne.set(0)
-            self.flywheelTwo.set(0)
+        #flywheel code – toggle the flywheel/conveyor system on a single button press
+        if self.toolController.getRawButtonPressed(4):  # x button (rising edge only)
+            self.flywheel.toggle()
         #conveyor code
         if self.toolController.getRawButton(1):#triangle and square
             self.conveyorMotor.set(-.5)
